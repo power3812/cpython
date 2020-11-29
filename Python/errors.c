@@ -1079,7 +1079,6 @@ PyErr_NewException(const char *name, PyObject *base, PyObject *dict)
 {
     PyThreadState *tstate = _PyThreadState_GET();
     PyObject *modulename = NULL;
-    PyObject *classname = NULL;
     PyObject *mydict = NULL;
     PyObject *bases = NULL;
     PyObject *result = NULL;
@@ -1099,10 +1098,11 @@ PyErr_NewException(const char *name, PyObject *base, PyObject *dict)
             goto failure;
     }
 
-    if (_PyDict_GetItemIdWithError(dict, &PyId___module__) == NULL) {
-        if (_PyErr_Occurred(tstate)) {
-            goto failure;
-        }
+    int r = _PyDict_ContainsId(dict, &PyId___module__);
+    if (r < 0) {
+        goto failure;
+    }
+    if (r == 0) {
         modulename = PyUnicode_FromStringAndSize(name,
                                              (Py_ssize_t)(dot-name));
         if (modulename == NULL)
@@ -1125,7 +1125,6 @@ PyErr_NewException(const char *name, PyObject *base, PyObject *dict)
   failure:
     Py_XDECREF(bases);
     Py_XDECREF(mydict);
-    Py_XDECREF(classname);
     Py_XDECREF(modulename);
     return result;
 }
@@ -1426,7 +1425,7 @@ void
 _PyErr_WriteUnraisableMsg(const char *err_msg_str, PyObject *obj)
 {
     PyThreadState *tstate = _PyThreadState_GET();
-    assert(tstate != NULL);
+    _Py_EnsureTstateNotNULL(tstate);
 
     PyObject *err_msg = NULL;
     PyObject *exc_type, *exc_value, *exc_tb;
@@ -1595,9 +1594,18 @@ PyErr_SyntaxLocationObject(PyObject *filename, int lineno, int col_offset)
             }
             Py_DECREF(tmp);
         }
+        else {
+            _PyErr_Clear(tstate);
+        }
     }
     if (exc != PyExc_SyntaxError) {
-        if (!_PyObject_HasAttrId(v, &PyId_msg)) {
+        if (_PyObject_LookupAttrId(v, &PyId_msg, &tmp) < 0) {
+            _PyErr_Clear(tstate);
+        }
+        else if (tmp) {
+            Py_DECREF(tmp);
+        }
+        else {
             tmp = PyObject_Str(v);
             if (tmp) {
                 if (_PyObject_SetAttrId(v, &PyId_msg, tmp)) {
@@ -1609,7 +1617,13 @@ PyErr_SyntaxLocationObject(PyObject *filename, int lineno, int col_offset)
                 _PyErr_Clear(tstate);
             }
         }
-        if (!_PyObject_HasAttrId(v, &PyId_print_file_and_line)) {
+        if (_PyObject_LookupAttrId(v, &PyId_print_file_and_line, &tmp) < 0) {
+            _PyErr_Clear(tstate);
+        }
+        else if (tmp) {
+            Py_DECREF(tmp);
+        }
+        else {
             if (_PyObject_SetAttrId(v, &PyId_print_file_and_line,
                                     Py_None)) {
                 _PyErr_Clear(tstate);
@@ -1648,16 +1662,18 @@ err_programtext(PyThreadState *tstate, FILE *fp, int lineno)
 {
     int i;
     char linebuf[1000];
-
-    if (fp == NULL)
+    if (fp == NULL) {
         return NULL;
+    }
+
     for (i = 0; i < lineno; i++) {
         char *pLastChar = &linebuf[sizeof(linebuf) - 2];
         do {
             *pLastChar = '\0';
             if (Py_UniversalNewlineFgets(linebuf, sizeof linebuf,
-                                         fp, NULL) == NULL)
-                break;
+                                         fp, NULL) == NULL) {
+                goto after_loop;
+            }
             /* fgets read *something*; if it didn't get as
                far as pLastChar, it must have found a newline
                or hit the end of the file; if pLastChar is \n,
@@ -1665,6 +1681,8 @@ err_programtext(PyThreadState *tstate, FILE *fp, int lineno)
                yet seen a newline, so must continue */
         } while (*pLastChar != '\0' && *pLastChar != '\n');
     }
+
+after_loop:
     fclose(fp);
     if (i == lineno) {
         PyObject *res;
